@@ -5,7 +5,6 @@ import shutil
 from datetime import datetime
 
 from github_backup.github_backup import (
-    backup_account,
     backup_repositories,
     check_git_lfs_install,
     filter_repositories,
@@ -17,7 +16,6 @@ from github_backup.github_backup import (
     retrieve_repositories,
 )
 
-from github_backup.zip import do_zip
 from github_backup.s3upload import upload_file
 from github_backup.snspublish import publish_message
 
@@ -27,7 +25,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-def main(output_directory, zip_directory, output_s3):
+def main(args):
+    output_directory = os.path.realpath(args.output_directory)
+    zip_directory = os.path.realpath(args.output_zip)
+    output_s3 = args.output_s3
 
     # INJECT ENVIRONMENT VARIABLES
     args.token = os.environ.get("GITHUB_PAT_BACKUP", None)
@@ -44,10 +45,6 @@ def main(output_directory, zip_directory, output_s3):
         log_info('Create ZIP directory {0}'.format(zip_directory))
         mkdir_p(zip_directory)
 
-    account_directory = f"{output_directory}/account"
-    if not os.path.isdir(account_directory):
-        mkdir_p(account_directory)
-
     if args.lfs_clone:
         check_git_lfs_install()
 
@@ -63,25 +60,19 @@ def main(output_directory, zip_directory, output_s3):
     repositories = retrieve_repositories(args, authenticated_user)
     repositories = filter_repositories(args, repositories)
     backup_repositories(args, output_directory, repositories)
-    backup_account(args, account_directory)
 
     #
     # Zip content
     #
     today_date = datetime.today().strftime('%Y-%m-%d')
-    zip_account = f"{today_date}_github_account.zip"
-    fname_account = os.path.join(zip_directory, zip_account)
-    log_info(f"[!] Zipping account folder: {fname_account}")
-    do_zip(account_directory, fname_account)
-
     files = dict()
     for repo in repositories:
-        zip_name = f"{today_date}_{repo['name']}.zip"
-        fname = os.path.join(zip_directory, zip_name)
-        files[zip_name] = fname
+        zip_base_name = f"{today_date}_{repo['name']}"
+        fname = os.path.join(zip_directory, zip_base_name)
         repo_dir = f"{output_directory}/repositories/{repo['name']}"
+        fname = shutil.make_archive(fname, 'zip', repo_dir)
         log_info(f"Zip file: {fname}")
-        do_zip(repo_dir, fname)
+        files[zip_base_name + str('.zip')] = fname
         shutil.rmtree(repo_dir)
 
     #
@@ -90,7 +81,6 @@ def main(output_directory, zip_directory, output_s3):
     if output_s3 is None:
         log_info(f"Skipping upload to s3")
     else:
-        upload_file(fname_account, output_s3, object_name=f"github/{zip_account}")
         for name in files.keys():
             print(f"upload {files[name]} to {output_s3}/github/{name}" )
             upload_file(files[name], output_s3, object_name=f"github/{name}")
@@ -106,11 +96,8 @@ if __name__ == '__main__':
         # Parse Arguments
         #
         args = parse_args()
-        output_directory = os.path.realpath(args.output_directory)
-        zip_directory = os.path.realpath(args.output_zip)
-        output_s3 = args.output_s3
         errors_sns = args.errors_sns
-        main(output_directory, zip_directory, output_s3)
+        main(args)
     except Exception as e:
         publish_message(str(e), errors_sns)
         log_warning(str(e))
